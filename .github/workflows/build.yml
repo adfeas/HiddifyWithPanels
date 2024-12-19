@@ -24,61 +24,31 @@ env:
   TARGET_NAME_dmg: "Hiddify-MacOS"
   TARGET_NAME_pkg: "Hiddify-MacOS-Installer"
   TARGET_NAME_ipa: "Hiddify-iOS"
-  TARGET_NAME_AppImage: "Hiddify-Linux-x64"
-  TARGET_NAME_deb: "Hiddify-Debian-x64"
-  TARGET_NAME_rpm: "Hiddify-rpm-x64"
 
 jobs:
-  build_linux:
-    permissions: write-all
-    runs-on: ubuntu-22.04
+  test:
+    outputs:
+      draftBuildCode: ${{ steps.draftBuildCode.outputs.datetime }}
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2.16.0
+      - uses: actions/checkout@v3
+      - uses: subosito/flutter-action@v2.13.0
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: 'stable'
           cache: true
 
-      - name: Setup dependencies
-        run: make linux-install-dependencies
-
-      - name: Prepare for Linux
+      - name: Prepare
         run: make linux-prepare
+      - name: Test
+        run: flutter test
 
-      - name: Build Linux
-        env:
-          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
-        run: make linux-release
-
-      - name: Copy to out Linux
-        run: |
-          ls -R dist/
-          mkdir out
-          mkdir tmp_out
-          for EXT in AppImage deb rpm; do
-            KEY=TARGET_NAME_${EXT}
-            FILENAME=${!KEY}
-            echo "For $EXT ($KEY) filename is ${FILENAME}"
-            mv dist/*/*.$EXT tmp_out/${FILENAME}.$EXT
-            ls tmp_out
-            chmod +x tmp_out/${FILENAME}.$EXT
-            cp ./.github/help/linux/* tmp_out/
-            mv tmp_out/${FILENAME}.$EXT out/
-          done
-
-      - name: Upload Linux Artifact
-        if: env.UPLOAD_ARTIFACT == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux
-          path: ./out
-          retention-days: 1
+      - name: make draftBuildCode
+        id: draftBuildCode
+        run: echo "::set-output name=datetime::$(date +'%d.%H.%M')"
 
   build_apk:
+    needs: test
     permissions: write-all
     runs-on: ubuntu-latest
     steps:
@@ -107,6 +77,7 @@ jobs:
           flutter pub get
           dart run build_runner build --delete-conflicting-outputs
           dart run slang
+          flutter pub global activate flutter_distributor
 
       - name: Build APK
         run: |
@@ -121,6 +92,7 @@ jobs:
           retention-days: 1
 
   build_windows:
+    needs: test
     permissions: write-all
     runs-on: windows-2019
     steps:
@@ -137,8 +109,13 @@ jobs:
       - name: Install Dependencies
         run: |
           flutter pub get
+          flutter pub global activate flutter_distributor
           dart run build_runner build --delete-conflicting-outputs
           dart run slang
+      - name: Add flutter pub global to PATH
+        run: |
+          echo "${{ runner.tool_cache }}/pub-cache/bin" >> $GITHUB_PATH
+
 
       - name: Prepare for Windows
         run: |
@@ -164,9 +141,11 @@ jobs:
           path: ./out
           retention-days: 1
 
+  # 新增的 macOS 构建作业
   build_macos:
+    needs: test
     permissions: write-all
-    runs-on: macos-14
+    runs-on: macos-13
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -204,16 +183,17 @@ jobs:
           name: macOS
           path: ./out
           retention-days: 1
-
+# 新增的 iOS 构建作业
   build_ios:
+    needs: test
     permissions: write-all
-    runs-on: macos-12
+    runs-on: macos-14
     steps:
       - name: Checkout
         uses: actions/checkout@v3
   
       - name: Setup Flutter
-        uses: subosito/flutter-action@v2.16.0
+        uses: subosito/flutter-action@v2.13.0
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: 'stable'
@@ -232,23 +212,30 @@ jobs:
           cd ios
           rm -rf Pods Podfile.lock
           pod install
-          
+  
       - name: Install tree
-        run: brew install tree
-
+        run: |
+          brew install tree
+  
       - name: Prepare for iOS
         run: |
           make ios-prepare
           tree
+          
+      - name: Cache CocoaPods
+        uses: actions/cache@v2
+        with:
+          path: Pods
+          key: ${{ runner.os }}-pods-${{ hashFiles('**/Podfile.lock') }}
   
-      - name: Build iOS (No Code Sign)
+      - name: Build iOS
         run: |
-          flutter build ipa --no-codesign
+          make ios-release
   
       - name: Copy to out iOS
         run: |
           mkdir out
-          mv build/ios/ipa/*.ipa out/${TARGET_NAME_ipa}.ipa
+          mv dist/*/*.ipa out/${TARGET_NAME_ipa}.ipa
   
       - name: Upload iOS Artifact
         if: env.UPLOAD_ARTIFACT == 'true'
